@@ -459,7 +459,8 @@ class ArgumentParser(argparse.ArgumentParser):
         env_var_args = []
         actions_with_env_var_values = [a for a in self._actions
             if not a.is_positional_arg and a.env_var and a.env_var in env_vars
-                and not already_on_command_line(args, a.option_strings)]
+                and (not already_on_command_line(args, a.option_strings) or
+                    a.multisource_merge)]
         for action in actions_with_env_var_values:
             key = action.env_var
             value = env_vars[key]  # TODO parse env var values here to allow lists?
@@ -509,7 +510,8 @@ class ArgumentParser(argparse.ArgumentParser):
                 if key in known_config_keys:
                     action = known_config_keys[key]
                     discard_this_key = already_on_command_line(
-                        args, action.option_strings)
+                        args, action.option_strings) and \
+                        not action.multisource_merge
                 else:
                     action = None
                     discard_this_key = self._ignore_unknown_config_file_keys or \
@@ -859,6 +861,14 @@ def add_argument(self, *args, **kwargs):
             configargparse to write all current commandline args to this file
             as config options and then exit.
             Default: False
+        multisource_merge: If True, occurrences of this arg in more than one
+            location will result in all occurrences being merged together,
+            instead of occurrences in later locations overriding earlier
+            locations. The user can override this behavior by using a special
+            arg that is automatically created called --clear-<arg> where <arg>
+            is this arg less prefix.  Only works with args where action is set
+            to 'append'
+            Default: False
     """
 
     env_var = kwargs.pop("env_var", None)
@@ -870,12 +880,15 @@ def add_argument(self, *args, **kwargs):
     is_write_out_config_file_arg = kwargs.pop(
         "is_write_out_config_file_arg", None)
 
+    multisource_merge = kwargs.pop("multisource_merge", None)
+
     action = self.original_add_argument_method(*args, **kwargs)
 
     action.is_positional_arg = not action.option_strings
     action.env_var = env_var
     action.is_config_file_arg = is_config_file_arg
     action.is_write_out_config_file_arg = is_write_out_config_file_arg
+    action.multisource_merge = multisource_merge
 
     if action.is_positional_arg and env_var:
         raise ValueError("env_var can't be set for a positional arg.")
@@ -889,6 +902,23 @@ def add_argument(self, *args, **kwargs):
         if is_config_file_arg:
                 raise ValueError(error_prefix + "can't also have "
                                                 "is_config_file_arg=True")
+    if action.multisource_merge == True:
+        if type(action) != argparse._AppendAction:
+            raise ValueError("arg with multisource_merge=True must have "
+                             "action='append'")
+
+        longargs = [arg for arg in action.option_strings
+                    if any(arg.startswith(2*c) for c in self.prefix_chars)]
+        if not longargs:
+            raise ValueError("arg with multisource_merge=True must have at "
+                             "least one long argument form")
+        clearargs = [arg[0:2] + 'clear-' + arg[2:] for arg in longargs]
+        self.add_argument(
+            *clearargs,
+            action='store_const', dest=action.dest, const=[],
+            help='Clear preceding values of ' + longargs[0],
+            multisource_merge='bypass'
+        )
 
     return action
 
